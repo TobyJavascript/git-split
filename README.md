@@ -11,7 +11,7 @@ The 100 MiB chunk size corresponds to the binary interpretation (100 * 1024 * 10
 
 ## Configuration
 
-The default chunk size is 100 MiB. To change it, create a `.gitsplit.toml` file in the **repository root** next to `.gitignore` and `.splitignore`:
+Create a `.gitsplit.toml` in the **repository root** to customize behavior. All settings are optional and default to values shown below.
 
 ```
 my-repo/
@@ -25,10 +25,24 @@ my-repo/
 
 ```toml
 # .gitsplit.toml
-chunk_size = 50
+chunk_size = 100         # MiB
+
+[hooks]                  # all default to true
+pre_commit     = true
+post_commit    = true
+post_checkout  = true
+post_merge     = true
 ```
 
-The value is in MiB. If `.gitsplit.toml` is missing or unreadable, the tool falls back to 100 MiB.
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `chunk_size` | Integer | `100` | Chunk size in MiB. Files larger than this are split. |
+| `hooks.pre_commit` | Boolean | `true` | Install `pre-commit` hook that auto-splits large files before committing. |
+| `hooks.post_commit` | Boolean | `true` | Install `post-commit` hook that auto-assembles originals after committing. |
+| `hooks.post_checkout` | Boolean | `true` | Install `post-checkout` hook that auto-assembles after branch switches or clone. |
+| `hooks.post_merge` | Boolean | `true` | Install `post-merge` hook that auto-assembles after pull or merge. |
+
+Omitting any key uses its default. Setting a hook to `false` prevents it from being installed when you run `git-split hooks --install`.
 
 ## Ignored files
 

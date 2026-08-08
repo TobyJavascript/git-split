@@ -7,7 +7,6 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MiB
 const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MiB read buffer
 const MANIFEST_NAME: &str = "manifest.json";
 const CONFIG_NAME: &str = ".gitsplit.toml";
@@ -22,14 +21,43 @@ struct Manifest {
     original_sha256: String,
 }
 
+fn default_chunk_size() -> u64 {
+    100
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct HooksConfig {
+    #[serde(default = "default_true")]
+    pre_commit: bool,
+    #[serde(default = "default_true")]
+    post_commit: bool,
+    #[serde(default = "default_true")]
+    post_checkout: bool,
+    #[serde(default = "default_true")]
+    post_merge: bool,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        HooksConfig {
+            pre_commit: true,
+            post_commit: true,
+            post_checkout: true,
+            post_merge: true,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct Config {
     #[serde(default = "default_chunk_size")]
     chunk_size: u64,
-}
-
-fn default_chunk_size() -> u64 {
-    100
+    #[serde(default)]
+    hooks: HooksConfig,
 }
 
 #[derive(Parser)]
@@ -125,13 +153,29 @@ git -C "$REPO_ROOT" add -A"#,
     )
 }
 
-fn install_hooks(git_dir: &Path) -> io::Result<()> {
+fn install_hooks(git_dir: &Path, config: &HooksConfig) -> io::Result<()> {
     let hooks_dir = git_dir.join("hooks");
     fs::create_dir_all(&hooks_dir)?;
 
-    let hooks = ["pre-commit", "post-commit", "post-checkout", "post-merge"];
+    let hook_filters = [
+        ("pre-commit", config.pre_commit),
+        ("post-commit", config.post_commit),
+        ("post-checkout", config.post_checkout),
+        ("post-merge", config.post_merge),
+    ];
 
-    for name in hooks {
+    for &(name, enabled) in &hook_filters {
+        if !enabled {
+            let path = hooks_dir.join(name);
+            if path.exists() {
+                let content = fs::read_to_string(&path)?;
+                if content.contains(HOOK_MARKER) {
+                    println!("Removing disabled hook: {}", name);
+                    fs::remove_file(&path)?;
+                }
+            }
+            continue;
+        }
         let path = hooks_dir.join(name);
         if path.exists() {
             let content = fs::read_to_string(&path)?;
@@ -188,6 +232,9 @@ fn uninstall_hooks(git_dir: &Path) -> io::Result<()> {
 }
 
 fn manage_hooks(install: bool, uninstall: bool) {
+    let cwd = std::env::current_dir().expect("Failed to get working directory");
+    let work_dir = cwd.parent().unwrap_or(&cwd);
+
     let git_dir = match find_git_dir() {
         Some(d) => d,
         None => {
@@ -197,7 +244,8 @@ fn manage_hooks(install: bool, uninstall: bool) {
     };
 
     if install {
-        if let Err(e) = install_hooks(&git_dir) {
+        let config = load_config(work_dir);
+        if let Err(e) = install_hooks(&git_dir, &config.hooks) {
             eprintln!("Failed to install hooks: {}", e);
         }
     } else if uninstall {
@@ -211,19 +259,19 @@ fn manage_hooks(install: bool, uninstall: bool) {
     }
 }
 
-fn load_config(work_dir: &Path) -> u64 {
+fn load_config(work_dir: &Path) -> Config {
     let path = work_dir.join(CONFIG_NAME);
     if path.exists() {
         match fs::read_to_string(&path) {
             Ok(content) => match toml::from_str::<Config>(&content) {
-                Ok(cfg) => cfg.chunk_size * 1024 * 1024,
+                Ok(cfg) => cfg,
                 Err(_e) => {
                     eprintln!(
                         "Warning: failed to parse '{}', using default ({})",
                         path.display(),
                         default_chunk_size()
                     );
-                    DEFAULT_CHUNK_SIZE
+                    Config::default()
                 }
             },
             Err(_e) => {
@@ -232,18 +280,19 @@ fn load_config(work_dir: &Path) -> u64 {
                     path.display(),
                     default_chunk_size()
                 );
-                DEFAULT_CHUNK_SIZE
+                Config::default()
             }
         }
     } else {
-        DEFAULT_CHUNK_SIZE
+        Config::default()
     }
 }
 
 fn split_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
     let work_dir = cwd.parent().unwrap_or(&cwd).to_path_buf();
-    let chunk_size = load_config(&work_dir);
+    let config = load_config(&work_dir);
+    let chunk_size = config.chunk_size * 1024 * 1024;
 
     let mut builder = WalkBuilder::new(&work_dir);
     builder.add_custom_ignore_filename(".splitignore");
