@@ -9,6 +9,27 @@ The 100 MiB chunk size corresponds to the binary interpretation (100 * 1024 * 10
 - **`split:`** Scans the folder next to the tool and splits files over 100 MB into a `.split/` directory containing chunks and a `manifest.json`.
 - **`assemble:`** Finds `.split/` directories and reassembles the original files, verifying their integrity.
 
+## Configuration
+
+The default chunk size is 100 MiB. To change it, create a `.gitsplit.toml` file in the **repository root** next to `.gitignore` and `.splitignore`:
+
+```
+my-repo/
+├── .gitsplit.toml         <-- here
+├── .gitignore
+├── .splitignore
+├── git-split/
+│   └── target/release/git-split
+└── ...
+```
+
+```toml
+# .gitsplit.toml
+chunk_size = 50
+```
+
+The value is in MiB. If `.gitsplit.toml` is missing or unreadable, the tool falls back to 100 MiB.
+
 ## Ignored files
 
 Files matched by your repository's `.gitignore` are automatically skipped.

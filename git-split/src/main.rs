@@ -6,17 +6,29 @@ use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-const CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MiB
+const DEFAULT_CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MiB
 const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MiB read buffer
 const MANIFEST_NAME: &str = "manifest.json";
+const CONFIG_NAME: &str = ".gitsplit.toml";
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Manifest {
     original_filename: String,
     original_size: u64,
+    chunk_size: u64,
     chunk_count: usize,
     chunks: Vec<String>,
     original_sha256: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct Config {
+    #[serde(default = "default_chunk_size")]
+    chunk_size: u64,
+}
+
+fn default_chunk_size() -> u64 {
+    100
 }
 
 #[derive(Parser)]
@@ -29,7 +41,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Scan parent folder (recursively) and split files over 100 MiB
+    /// Scan parent folder (recursively) and split files over configured size
     Split,
     /// Scan parent folder (recursively) for .split directories and reassemble
     Assemble,
@@ -43,12 +55,45 @@ fn main() {
     }
 }
 
+fn load_config(work_dir: &Path) -> u64 {
+    let path = work_dir.join(CONFIG_NAME);
+    if path.exists() {
+        match fs::read_to_string(&path) {
+            Ok(content) => match toml::from_str::<Config>(&content) {
+                Ok(cfg) => cfg.chunk_size * 1024 * 1024,
+                Err(_e) => {
+                    eprintln!(
+                        "Warning: failed to parse '{}', using default ({})",
+                        path.display(),
+                        default_chunk_size()
+                    );
+                    DEFAULT_CHUNK_SIZE
+                }
+            },
+            Err(_e) => {
+                eprintln!(
+                    "Warning: failed to read '{}', using default ({})",
+                    path.display(),
+                    default_chunk_size()
+                );
+                DEFAULT_CHUNK_SIZE
+            }
+        }
+    } else {
+        DEFAULT_CHUNK_SIZE
+    }
+}
+
 fn split_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
     let work_dir = cwd.parent().unwrap_or(&cwd).to_path_buf();
+    let chunk_size = load_config(&work_dir);
 
     let mut builder = WalkBuilder::new(&work_dir);
     builder.add_custom_ignore_filename(".splitignore");
+    builder.filter_entry(|e| {
+        !e.file_name().to_string_lossy().ends_with(".split")
+    });
 
     for result in builder.build() {
         let entry = match result {
@@ -78,21 +123,26 @@ fn split_files() {
             Err(_) => continue,
         };
 
-        if size > CHUNK_SIZE {
-            if let Err(e) = split_one(path, size) {
+        if size > chunk_size {
+            if let Err(e) = split_one(path, size, chunk_size) {
                 eprintln!("Failed to split '{}': {}", path.display(), e);
             }
         }
     }
 }
 
-fn split_one(path: &Path, size: u64) -> io::Result<()> {
+fn split_one(path: &Path, size: u64, chunk_size: u64) -> io::Result<()> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid file name"))?;
 
-    println!("Splitting '{}' ({} bytes)", path.display(), size);
+    println!(
+        "Splitting '{}' ({} bytes, chunk size {} MiB)",
+        path.display(),
+        size,
+        chunk_size / 1024 / 1024
+    );
 
     let split_dir = path.with_extension("split");
     if split_dir.exists() {
@@ -115,8 +165,8 @@ fn split_one(path: &Path, size: u64) -> io::Result<()> {
         let mut writer = BufWriter::new(out);
 
         let mut written: u64 = 0;
-        while written < CHUNK_SIZE {
-            let want = std::cmp::min(buf.len() as u64, CHUNK_SIZE - written) as usize;
+        while written < chunk_size {
+            let want = std::cmp::min(buf.len() as u64, chunk_size - written) as usize;
             let n = reader.read(&mut buf[..want])?;
             if n == 0 {
                 break;
@@ -141,6 +191,7 @@ fn split_one(path: &Path, size: u64) -> io::Result<()> {
     let manifest = Manifest {
         original_filename: name.to_string(),
         original_size: size,
+        chunk_size,
         chunk_count: chunks.len(),
         chunks,
         original_sha256: format!("{:x}", hasher.finalize()),
