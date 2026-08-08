@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const DEFAULT_CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MiB
 const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MiB read buffer
@@ -45,6 +46,13 @@ enum Commands {
     Split,
     /// Scan parent folder (recursively) for .split directories and reassemble
     Assemble,
+    /// Install or uninstall git hooks for automatic splitting and assembling
+    Hooks {
+        #[arg(long, conflicts_with = "uninstall")]
+        install: bool,
+        #[arg(long, conflicts_with = "install")]
+        uninstall: bool,
+    },
 }
 
 fn main() {
@@ -52,6 +60,153 @@ fn main() {
     match cli.command {
         Commands::Split => split_files(),
         Commands::Assemble => assemble_files(),
+        Commands::Hooks { install, uninstall } => manage_hooks(install, uninstall),
+    }
+}
+
+fn find_git_dir() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let work_dir = cwd.parent().unwrap_or(&cwd);
+
+    let output = Command::new("git")
+        .args(["-C", &work_dir.to_string_lossy(), "rev-parse", "--git-dir"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let git_dir_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Some(work_dir.join(git_dir_str))
+}
+
+const HOOK_MARKER: &str = "# <git-split-hook>";
+
+fn hook_content(hook_name: &str) -> String {
+    let bin_name = if cfg!(windows) {
+        "git-split.exe"
+    } else {
+        "git-split"
+    };
+
+    let split_cmd = format!(
+        r#"cd "$(git rev-parse --show-toplevel)/git-split" && ./target/release/{} split"#,
+        bin_name
+    );
+    let assemble_cmd = format!(
+        r#"cd "$(git rev-parse --show-toplevel)/git-split" && ./target/release/{} assemble"#,
+        bin_name
+    );
+
+    let body = match hook_name {
+        "pre-commit" => {
+            format!(
+                r#"{}
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/git-split" || exit 1
+./target/release/{} split || exit 1
+git -C "$REPO_ROOT" add -A"#,
+                split_cmd, bin_name
+            )
+        }
+        "post-checkout" => assemble_cmd,
+        "post-merge" => assemble_cmd,
+        _ => "".to_string(),
+    };
+
+    format!(
+        r#"#!/bin/sh
+{}
+{}
+"#,
+        HOOK_MARKER, body
+    )
+}
+
+fn install_hooks(git_dir: &Path) -> io::Result<()> {
+    let hooks_dir = git_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+
+    let hooks = ["pre-commit", "post-checkout", "post-merge"];
+
+    for name in hooks {
+        let path = hooks_dir.join(name);
+        if path.exists() {
+            let content = fs::read_to_string(&path)?;
+            if content.contains(HOOK_MARKER) {
+                println!("Replacing existing git-split hook: {}", name);
+            } else {
+                println!(
+                    "Skipping '{}': a user-defined hook already exists.",
+                    name
+                );
+                continue;
+            }
+        } else {
+            println!("Installing hook: {}", name);
+        }
+
+        let mut file = File::create(&path)?;
+        file.write_all(hook_content(name).as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+        }
+    }
+
+    println!("Hooks installed successfully.");
+    Ok(())
+}
+
+fn uninstall_hooks(git_dir: &Path) -> io::Result<()> {
+    let hooks_dir = git_dir.join("hooks");
+    let hooks = ["pre-commit", "post-checkout", "post-merge"];
+
+    for name in hooks {
+        let path = hooks_dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)?;
+        if content.contains(HOOK_MARKER) {
+            println!("Removing hook: {}", name);
+            fs::remove_file(&path)?;
+        } else {
+            println!(
+                "Leaving '{}': not managed by git-split.",
+                name
+            );
+        }
+    }
+
+    println!("Hooks uninstalled successfully.");
+    Ok(())
+}
+
+fn manage_hooks(install: bool, uninstall: bool) {
+    let git_dir = match find_git_dir() {
+        Some(d) => d,
+        None => {
+            eprintln!("Error: not inside a git repository.");
+            return;
+        }
+    };
+
+    if install {
+        if let Err(e) = install_hooks(&git_dir) {
+            eprintln!("Failed to install hooks: {}", e);
+        }
+    } else if uninstall {
+        if let Err(e) = uninstall_hooks(&git_dir) {
+            eprintln!("Failed to uninstall hooks: {}", e);
+        }
+    } else {
+        println!("Usage:");
+        println!("  git-split hooks --install    # install auto-split/assemble hooks");
+        println!("  git-split hooks --uninstall  # remove managed git-split hooks");
     }
 }
 

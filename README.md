@@ -6,7 +6,7 @@ The 100 MiB chunk size corresponds to the binary interpretation (100 * 1024 * 10
 
 ## How it works
 
-- **`split:`** Scans the folder next to the tool and splits files over 100 MB into a `.split/` directory containing chunks and a `manifest.json`.
+- **`split:`** Scans the folder next to the tool and splits files over the configured chunk size into a `.split/` directory containing chunks and a `manifest.json`.
 - **`assemble:`** Finds `.split/` directories and reassembles the original files, verifying their integrity.
 
 ## Configuration
@@ -110,4 +110,33 @@ my-repo/
 ├── huge-file.bin          <-- restored, SHA-256 verified
 └── ...
 ```
+
+## Git-flow integration (optional)
+
+By default the tool is entirely manual. If you prefer automatic splitting and assembling, you can install git hooks into **this specific repository only**:
+
+```bash
+cd git-split
+./target/release/git-split hooks --install
+```
+
+This installs three hooks inside `.git/hooks/`:
+
+| Hook | Trigger | What it does |
+|---|---|---|
+| `pre-commit` | Before every commit | Runs `split` so large files are chunked before the commit is created |
+| `post-checkout` | After every `git checkout` or `git clone` | Runs `assemble` so teammates get the original files restored |
+| `post-merge` | After every `git pull` or `git merge` | Runs `assemble` so pulled changes are restored |
+
+These hooks are repo-local and do **not** affect any other repository on your machine.
+
+To remove them later:
+
+```bash
+./target/release/git-split hooks --uninstall
+```
+
+### Windows note
+
+Git hooks are shell scripts. They work on Windows if `sh.exe` is available (included with standard Git for Windows), but may not work with Git from the Microsoft Store or in environments without a POSIX shell.
 
