@@ -1,6 +1,8 @@
 # git-split
 
-Split large files (>100 MB) into smaller chunks for hosting on GitHub's free tier. Works on any file type and the reassembly is byte-perfect, verified with SHA-256.
+Split large files (>100 MiB) into smaller chunks for hosting on GitHub's free tier. Works on any file type and the reassembly is byte-perfect, verified with SHA-256.
+
+The 100 MiB chunk size corresponds to the binary interpretation (100 * 1024 * 1024 bytes) commonly used by GitHub's file size enforcement, even though GitHub documents it as "100 MB".
 
 ## How it works
 

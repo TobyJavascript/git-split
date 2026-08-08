@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use walkdir::WalkDir;
 
 const CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MiB
 const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MiB read buffer
@@ -28,9 +29,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Scan parent folder and split files over 100 MB
+    /// Scan parent folder (recursively) and split files over 100 MiB
     Split,
-    /// Scan parent folder for .split directories and reassemble
+    /// Scan parent folder (recursively) for .split directories and reassemble
     Assemble,
 }
 
@@ -45,28 +46,43 @@ fn main() {
 fn split_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
     let work_dir = cwd.parent().unwrap_or(&cwd);
-    let entries = match fs::read_dir(work_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Error reading directory: {}", e);
-            return;
+
+    let walker = WalkDir::new(work_dir).into_iter();
+    for entry in walker.filter_entry(|e| {
+        let name = e.file_name().to_string_lossy();
+        if e.depth() == 1 && name == "git-split" {
+            return false;
         }
-    };
+        !name.starts_with('.')
+            && name != "node_modules"
+            && name != "target"
+            && !name.ends_with(".split")
+    }) {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("Warning: {}", e);
+                continue;
+            }
+        };
 
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-
-        if path.is_dir() {
+        if !entry.file_type().is_file() {
             continue;
         }
 
+        let name = entry.file_name().to_string_lossy();
+        if name == "git-split" || name == "git-split.exe" {
+            continue;
+        }
+
+        let path = entry.path();
         let size = match entry.metadata() {
             Ok(m) => m.len(),
             Err(_) => continue,
         };
 
         if size > CHUNK_SIZE {
-            if let Err(e) = split_one(&path, size) {
+            if let Err(e) = split_one(path, size) {
                 eprintln!("Failed to split '{}': {}", path.display(), e);
             }
         }
@@ -79,7 +95,7 @@ fn split_one(path: &Path, size: u64) -> io::Result<()> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid file name"))?;
 
-    println!("Splitting '{}' ({} bytes)", name, size);
+    println!("Splitting '{}' ({} bytes)", path.display(), size);
 
     let split_dir = path.with_extension("split");
     if split_dir.exists() {
@@ -153,19 +169,18 @@ fn split_one(path: &Path, size: u64) -> io::Result<()> {
 fn assemble_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
     let work_dir = cwd.parent().unwrap_or(&cwd);
-    let entries = match fs::read_dir(work_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Error reading directory: {}", e);
-            return;
-        }
-    };
 
-    let split_dirs: Vec<_> = entries
+    let split_dirs: Vec<_> = WalkDir::new(work_dir)
+        .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("split"))
-        .map(|e| e.path())
+        .filter(|e| e.file_type().is_dir())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|s| s.to_str())
+                == Some("split")
+        })
+        .map(|e| e.path().to_path_buf())
         .collect();
 
     if split_dirs.is_empty() {
