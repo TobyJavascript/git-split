@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
+use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
-use walkdir::WalkDir;
 
 const CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MiB
 const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MiB read buffer
@@ -45,20 +45,13 @@ fn main() {
 
 fn split_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
-    let work_dir = cwd.parent().unwrap_or(&cwd);
+    let work_dir = cwd.parent().unwrap_or(&cwd).to_path_buf();
 
-    let walker = WalkDir::new(work_dir).into_iter();
-    for entry in walker.filter_entry(|e| {
-        let name = e.file_name().to_string_lossy();
-        if e.depth() == 1 && name == "git-split" {
-            return false;
-        }
-        !name.starts_with('.')
-            && name != "node_modules"
-            && name != "target"
-            && !name.ends_with(".split")
-    }) {
-        let entry = match entry {
+    let mut builder = WalkBuilder::new(&work_dir);
+    builder.add_custom_ignore_filename(".splitignore");
+
+    for result in builder.build() {
+        let entry = match result {
             Ok(e) => e,
             Err(e) => {
                 eprintln!("Warning: {}", e);
@@ -66,16 +59,20 @@ fn split_files() {
             }
         };
 
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let name = entry.file_name().to_string_lossy();
-        if name == "git-split" || name == "git-split.exe" {
+        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
             continue;
         }
 
         let path = entry.path();
+
+        if let Ok(rel) = path.strip_prefix(&work_dir) {
+            if let Some(first) = rel.components().next() {
+                if first.as_os_str() == "git-split" {
+                    continue;
+                }
+            }
+        }
+
         let size = match entry.metadata() {
             Ok(m) => m.len(),
             Err(_) => continue,
@@ -170,10 +167,14 @@ fn assemble_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
     let work_dir = cwd.parent().unwrap_or(&cwd);
 
-    let split_dirs: Vec<_> = WalkDir::new(work_dir)
-        .into_iter()
+    let mut builder = WalkBuilder::new(work_dir);
+    builder.git_ignore(false);
+    builder.hidden(false);
+
+    let split_dirs: Vec<_> = builder
+        .build()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_dir())
+        .filter(|e| e.file_type().map_or(false, |ft| ft.is_dir()))
         .filter(|e| {
             e.path()
                 .extension()

@@ -9,6 +9,34 @@ The 100 MiB chunk size corresponds to the binary interpretation (100 * 1024 * 10
 - **`split:`** Scans the folder next to the tool and splits files over 100 MB into a `.split/` directory containing chunks and a `manifest.json`.
 - **`assemble:`** Finds `.split/` directories and reassembles the original files, verifying their integrity.
 
+## Ignored files
+
+Files matched by your repository's `.gitignore` are automatically skipped.
+
+To add split-specific rules, create a `.splitignore` file in the **repository root** next to `.gitignore`. It uses the same syntax: folders, wildcards, and negation are all supported.
+
+```
+my-repo/
+├── .gitignore           <-- here
+├── .splitignore         <-- here too
+├── git-split/
+│   └── target/release/git-split
+└── ...
+```
+
+```gitignore
+# .splitignore
+
+# Do not split ISO files
+*.iso
+
+# Do not split anything in backups/
+backups/
+
+# But allow this one specific file anyway
+!backups/critical-dump.iso
+```
+
 ## Building
 
 ```bash
