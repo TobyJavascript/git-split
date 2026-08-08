@@ -110,6 +110,7 @@ git -C "$REPO_ROOT" add -A"#,
                 split_cmd, bin_name
             )
         }
+        "post-commit" => assemble_cmd,
         "post-checkout" => assemble_cmd,
         "post-merge" => assemble_cmd,
         _ => "".to_string(),
@@ -128,7 +129,7 @@ fn install_hooks(git_dir: &Path) -> io::Result<()> {
     let hooks_dir = git_dir.join("hooks");
     fs::create_dir_all(&hooks_dir)?;
 
-    let hooks = ["pre-commit", "post-checkout", "post-merge"];
+    let hooks = ["pre-commit", "post-commit", "post-checkout", "post-merge"];
 
     for name in hooks {
         let path = hooks_dir.join(name);
@@ -162,7 +163,7 @@ fn install_hooks(git_dir: &Path) -> io::Result<()> {
 
 fn uninstall_hooks(git_dir: &Path) -> io::Result<()> {
     let hooks_dir = git_dir.join("hooks");
-    let hooks = ["pre-commit", "post-checkout", "post-merge"];
+    let hooks = ["pre-commit", "post-commit", "post-checkout", "post-merge"];
 
     for name in hooks {
         let path = hooks_dir.join(name);

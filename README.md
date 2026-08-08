@@ -120,11 +120,12 @@ cd git-split
 ./target/release/git-split hooks --install
 ```
 
-This installs three hooks inside `.git/hooks/`:
+This installs four hooks inside `.git/hooks/`:
 
 | Hook | Trigger | What it does |
 |---|---|---|
 | `pre-commit` | Before every commit | Runs `split` so large files are chunked before the commit is created |
+| `post-commit` | After every commit | Runs `assemble` so the original file is restored in the working tree for continued editing |
 | `post-checkout` | After every `git checkout` or `git clone` | Runs `assemble` so teammates get the original files restored |
 | `post-merge` | After every `git pull` or `git merge` | Runs `assemble` so pulled changes are restored |
 
