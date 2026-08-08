@@ -1,0 +1,234 @@
+use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::Path;
+
+const CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MiB
+const BUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MiB read buffer
+const MANIFEST_NAME: &str = "manifest.json";
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Manifest {
+    original_filename: String,
+    original_size: u64,
+    chunk_count: usize,
+    chunks: Vec<String>,
+    original_sha256: String,
+}
+
+#[derive(Parser)]
+#[command(name = "git-split")]
+#[command(about = "Split and assemble large files for GitHub")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Scan parent folder and split files over 100 MB
+    Split,
+    /// Scan parent folder for .split directories and reassemble
+    Assemble,
+}
+
+fn main() {
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Split => split_files(),
+        Commands::Assemble => assemble_files(),
+    }
+}
+
+fn split_files() {
+    let cwd = std::env::current_dir().expect("Failed to get working directory");
+    let work_dir = cwd.parent().unwrap_or(&cwd);
+    let entries = match fs::read_dir(work_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Error reading directory: {}", e);
+            return;
+        }
+    };
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+
+        if path.is_dir() {
+            continue;
+        }
+
+        let size = match entry.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => continue,
+        };
+
+        if size > CHUNK_SIZE {
+            if let Err(e) = split_one(&path, size) {
+                eprintln!("Failed to split '{}': {}", path.display(), e);
+            }
+        }
+    }
+}
+
+fn split_one(path: &Path, size: u64) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid file name"))?;
+
+    println!("Splitting '{}' ({} bytes)", name, size);
+
+    let split_dir = path.with_extension("split");
+    if split_dir.exists() {
+        fs::remove_dir_all(&split_dir)?;
+    }
+    fs::create_dir(&split_dir)?;
+
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+
+    let mut buf = vec![0u8; BUFFER_SIZE];
+    let mut chunks = Vec::new();
+
+    loop {
+        let idx = chunks.len();
+        let chunk_name = format!("chunk_{:03}", idx);
+        let chunk_path = split_dir.join(&chunk_name);
+        let out = File::create(&chunk_path)?;
+        let mut writer = BufWriter::new(out);
+
+        let mut written: u64 = 0;
+        while written < CHUNK_SIZE {
+            let want = std::cmp::min(buf.len() as u64, CHUNK_SIZE - written) as usize;
+            let n = reader.read(&mut buf[..want])?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n])?;
+            hasher.update(&buf[..n]);
+            written += n as u64;
+        }
+
+        writer.flush()?;
+        drop(writer);
+
+        if written == 0 {
+            fs::remove_file(chunk_path)?;
+            break;
+        }
+
+        chunks.push(chunk_name);
+        println!("  -> wrote {}", chunks.last().unwrap());
+    }
+
+    let manifest = Manifest {
+        original_filename: name.to_string(),
+        original_size: size,
+        chunk_count: chunks.len(),
+        chunks,
+        original_sha256: format!("{:x}", hasher.finalize()),
+    };
+
+    let manifest_path = split_dir.join(MANIFEST_NAME);
+    let mfile = File::create(&manifest_path)?;
+    let mut mwriter = BufWriter::new(mfile);
+    serde_json::to_writer_pretty(&mut mwriter, &manifest)?;
+    mwriter.flush()?;
+
+    fs::remove_file(path)?;
+
+    println!(
+        "  Done: {} chunks in '{}' (original removed)",
+        manifest.chunk_count,
+        split_dir.display()
+    );
+
+    Ok(())
+}
+
+fn assemble_files() {
+    let cwd = std::env::current_dir().expect("Failed to get working directory");
+    let work_dir = cwd.parent().unwrap_or(&cwd);
+    let entries = match fs::read_dir(work_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Error reading directory: {}", e);
+            return;
+        }
+    };
+
+    let split_dirs: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("split"))
+        .map(|e| e.path())
+        .collect();
+
+    if split_dirs.is_empty() {
+        println!("No .split directories found.");
+        return;
+    }
+
+    for dir in split_dirs {
+        if let Err(e) = assemble_one(&dir) {
+            eprintln!("Failed to assemble '{}': {}", dir.display(), e);
+        }
+    }
+}
+
+fn assemble_one(split_dir: &Path) -> io::Result<()> {
+    let manifest_path = split_dir.join(MANIFEST_NAME);
+    let mfile = File::open(&manifest_path)?;
+    let manifest: Manifest =
+        serde_json::from_reader(mfile).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let out_path = split_dir
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(&manifest.original_filename);
+
+    println!(
+        "Assembling '{}' ({} bytes, {} chunks)",
+        manifest.original_filename, manifest.original_size, manifest.chunk_count
+    );
+
+    let out = File::create(&out_path)?;
+    let mut writer = BufWriter::new(out);
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; BUFFER_SIZE];
+
+    for chunk_name in &manifest.chunks {
+        let chunk_path = split_dir.join(chunk_name);
+        let chunk = File::open(&chunk_path)?;
+        let mut reader = BufReader::new(chunk);
+
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            writer.write_all(&buf[..n])?;
+            hasher.update(&buf[..n]);
+        }
+
+        println!("  -> merged {}", chunk_name);
+    }
+
+    writer.flush()?;
+    drop(writer);
+
+    let hash = format!("{:x}", hasher.finalize());
+    if hash != manifest.original_sha256 {
+        eprintln!("  ERROR: SHA-256 mismatch — file may be corrupted!");
+        eprintln!("  Expected: {}", manifest.original_sha256);
+        eprintln!("  Got:      {}", hash);
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "checksum mismatch"));
+    }
+
+    println!("  Verified and written to '{}'", out_path.display());
+    Ok(())
+}
