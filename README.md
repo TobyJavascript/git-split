@@ -26,6 +26,7 @@ my-repo/
 ```toml
 # .gitsplit.toml
 chunk_size = 100         # MiB
+backup = true            # keep a copy in git-split/.backup/
 
 [hooks]                  # all default to true
 pre_commit     = true
@@ -37,6 +38,7 @@ post_merge     = true
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `chunk_size` | Integer | `100` | Chunk size in MiB. Files larger than this are split. |
+| `backup` | Boolean | `true` | Copy original files to `git-split/.backup/` before splitting. |
 | `hooks.pre_commit` | Boolean | `true` | Install `pre-commit` hook that auto-splits large files before committing. |
 | `hooks.post_commit` | Boolean | `true` | Install `post-commit` hook that auto-assembles originals after committing. |
 | `hooks.post_checkout` | Boolean | `true` | Install `post-checkout` hook that auto-assembles after branch switches or clone. |

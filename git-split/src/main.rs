@@ -56,6 +56,8 @@ impl Default for HooksConfig {
 struct Config {
     #[serde(default = "default_chunk_size")]
     chunk_size: u64,
+    #[serde(default = "default_true")]
+    backup: bool,
     #[serde(default)]
     hooks: HooksConfig,
 }
@@ -64,6 +66,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             chunk_size: default_chunk_size(),
+            backup: true,
             hooks: HooksConfig::default(),
         }
     }
@@ -338,6 +341,20 @@ fn split_files() {
         };
 
         if size > chunk_size {
+            if config.backup {
+                let cwd = std::env::current_dir().expect("Failed to get working directory");
+                let backup_dir = cwd.join(".backup");
+                if let Err(e) = fs::create_dir_all(&backup_dir) {
+                    eprintln!("Warning: failed to create backup dir: {}", e);
+                } else if let Some(name) = path.file_name() {
+                    let backup_path = backup_dir.join(name);
+                    if let Err(e) = fs::copy(path, &backup_path) {
+                        eprintln!("Warning: failed to backup '{}': {}", path.display(), e);
+                    } else {
+                        println!("  -> backed up to '{}'", backup_path.display());
+                    }
+                }
+            }
             if let Err(e) = split_one(path, size, chunk_size) {
                 eprintln!("Failed to split '{}': {}", path.display(), e);
             }
