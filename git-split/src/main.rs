@@ -52,12 +52,21 @@ impl Default for HooksConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Config {
     #[serde(default = "default_chunk_size")]
     chunk_size: u64,
     #[serde(default)]
     hooks: HooksConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            chunk_size: default_chunk_size(),
+            hooks: HooksConfig::default(),
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -337,6 +346,12 @@ fn split_files() {
 }
 
 fn split_one(path: &Path, size: u64, chunk_size: u64) -> io::Result<()> {
+    if chunk_size == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "chunk size is 0 — refusing to split",
+        ));
+    }
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
