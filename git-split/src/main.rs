@@ -60,6 +60,8 @@ struct Config {
     backup: bool,
     #[serde(default)]
     remove_original: bool,
+    #[serde(default = "default_true")]
+    use_gitignore: bool,
     #[serde(default)]
     hooks: HooksConfig,
 }
@@ -70,6 +72,7 @@ impl Default for Config {
             chunk_size: default_chunk_size(),
             backup: true,
             remove_original: false,
+            use_gitignore: true,
             hooks: HooksConfig::default(),
         }
     }
@@ -318,6 +321,7 @@ fn split_files() {
     builder.filter_entry(|e| {
         !e.file_name().to_string_lossy().ends_with(".split")
     });
+    builder.git_ignore(config.use_gitignore);
 
     for result in builder.build() {
         let entry = match result {
