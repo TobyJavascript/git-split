@@ -59,6 +59,8 @@ struct Config {
     #[serde(default = "default_true")]
     backup: bool,
     #[serde(default)]
+    remove_original: bool,
+    #[serde(default)]
     hooks: HooksConfig,
 }
 
@@ -67,6 +69,7 @@ impl Default for Config {
         Config {
             chunk_size: default_chunk_size(),
             backup: true,
+            remove_original: false,
             hooks: HooksConfig::default(),
         }
     }
@@ -130,29 +133,33 @@ fn hook_content(hook_name: &str) -> String {
         "git-split"
     };
 
-    let split_cmd = format!(
-        r#"cd "$(git rev-parse --show-toplevel)/git-split" && ./target/release/{} split"#,
-        bin_name
-    );
-    let assemble_cmd = format!(
-        r#"cd "$(git rev-parse --show-toplevel)/git-split" && ./target/release/{} assemble"#,
-        bin_name
-    );
-
     let body = match hook_name {
         "pre-commit" => {
             format!(
-                r#"{}
-REPO_ROOT=$(git rev-parse --show-toplevel)
+                r#"REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT/git-split" || exit 1
 ./target/release/{} split || exit 1
-git -C "$REPO_ROOT" add -A"#,
-                split_cmd, bin_name
+git -C "$REPO_ROOT" add -A
+# Unstage originals kept on disk so only .split/ is committed
+find "$REPO_ROOT" -type d -name "*.split" | while read -r splitdir; do
+    manifest="$splitdir/manifest.json"
+    if [ -f "$manifest" ]; then
+        orig=$(grep '"original_filename"' "$manifest" | head -n1 | cut -d'"' -f4)
+        if [ -n "$orig" ]; then
+            orig_path="${{splitdir%.split}}/$orig"
+            git -C "$REPO_ROOT" rm --cached -f "$orig_path" >/dev/null 2>&1 || true
+        fi
+    fi
+done"#,
+                bin_name
             )
         }
-        "post-commit" => assemble_cmd,
-        "post-checkout" => assemble_cmd,
-        "post-merge" => assemble_cmd,
+        "post-commit" | "post-checkout" | "post-merge" => format!(
+            r#"REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/git-split" || exit 1
+./target/release/{} assemble"#,
+            bin_name
+        ),
         _ => "".to_string(),
     };
 
@@ -355,14 +362,14 @@ fn split_files() {
                     }
                 }
             }
-            if let Err(e) = split_one(path, size, chunk_size) {
+            if let Err(e) = split_one(path, size, chunk_size, config.remove_original) {
                 eprintln!("Failed to split '{}': {}", path.display(), e);
             }
         }
     }
 }
 
-fn split_one(path: &Path, size: u64, chunk_size: u64) -> io::Result<()> {
+fn split_one(path: &Path, size: u64, chunk_size: u64, remove_original: bool) -> io::Result<()> {
     if chunk_size == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -440,13 +447,20 @@ fn split_one(path: &Path, size: u64, chunk_size: u64) -> io::Result<()> {
     serde_json::to_writer_pretty(&mut mwriter, &manifest)?;
     mwriter.flush()?;
 
-    fs::remove_file(path)?;
-
-    println!(
-        "  Done: {} chunks in '{}' (original removed)",
-        manifest.chunk_count,
-        split_dir.display()
-    );
+    if remove_original {
+        fs::remove_file(path)?;
+        println!(
+            "  Done: {} chunks in '{}' (original removed)",
+            manifest.chunk_count,
+            split_dir.display()
+        );
+    } else {
+        println!(
+            "  Done: {} chunks in '{}' (original kept)",
+            manifest.chunk_count,
+            split_dir.display()
+        );
+    }
 
     Ok(())
 }
