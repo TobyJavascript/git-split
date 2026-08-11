@@ -310,6 +310,18 @@ fn load_config(work_dir: &Path) -> Config {
     }
 }
 
+fn backup_file(src: &Path, subfolder: &str) -> io::Result<PathBuf> {
+    let cwd = std::env::current_dir().expect("Failed to get working directory");
+    let backup_dir = cwd.join(".backup").join(subfolder);
+    fs::create_dir_all(&backup_dir)?;
+    let name = src
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid file name"))?;
+    let dest = backup_dir.join(name);
+    fs::copy(src, &dest)?;
+    Ok(dest)
+}
+
 fn split_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
     let work_dir = cwd.parent().unwrap_or(&cwd).to_path_buf();
@@ -353,17 +365,9 @@ fn split_files() {
 
         if size > chunk_size {
             if config.backup {
-                let cwd = std::env::current_dir().expect("Failed to get working directory");
-                let backup_dir = cwd.join(".backup");
-                if let Err(e) = fs::create_dir_all(&backup_dir) {
-                    eprintln!("Warning: failed to create backup dir: {}", e);
-                } else if let Some(name) = path.file_name() {
-                    let backup_path = backup_dir.join(name);
-                    if let Err(e) = fs::copy(path, &backup_path) {
-                        eprintln!("Warning: failed to backup '{}': {}", path.display(), e);
-                    } else {
-                        println!("  -> backed up to '{}'", backup_path.display());
-                    }
+                match backup_file(path, "split") {
+                    Ok(dest) => println!("  -> backed up to '{}'", dest.display()),
+                    Err(e) => eprintln!("Warning: failed to backup '{}': {}", path.display(), e),
                 }
             }
             if let Err(e) = split_one(path, size, chunk_size, config.remove_original) {
@@ -472,6 +476,7 @@ fn split_one(path: &Path, size: u64, chunk_size: u64, remove_original: bool) -> 
 fn assemble_files() {
     let cwd = std::env::current_dir().expect("Failed to get working directory");
     let work_dir = cwd.parent().unwrap_or(&cwd);
+    let config = load_config(work_dir);
 
     let mut builder = WalkBuilder::new(work_dir);
     builder.git_ignore(false);
@@ -496,13 +501,13 @@ fn assemble_files() {
     }
 
     for dir in split_dirs {
-        if let Err(e) = assemble_one(&dir) {
+        if let Err(e) = assemble_one(&dir, config.backup) {
             eprintln!("Failed to assemble '{}': {}", dir.display(), e);
         }
     }
 }
 
-fn assemble_one(split_dir: &Path) -> io::Result<()> {
+fn assemble_one(split_dir: &Path, backup: bool) -> io::Result<()> {
     let manifest_path = split_dir.join(MANIFEST_NAME);
     let mfile = File::open(&manifest_path)?;
     let manifest: Manifest =
@@ -517,6 +522,13 @@ fn assemble_one(split_dir: &Path) -> io::Result<()> {
         "Assembling '{}' ({} bytes, {} chunks)",
         manifest.original_filename, manifest.original_size, manifest.chunk_count
     );
+
+    if backup && out_path.exists() {
+        match backup_file(&out_path, "assemble") {
+            Ok(dest) => println!("  -> backed up existing to '{}'", dest.display()),
+            Err(e) => eprintln!("  Warning: failed to backup existing file: {}", e),
+        }
+    }
 
     let out = File::create(&out_path)?;
     let mut writer = BufWriter::new(out);

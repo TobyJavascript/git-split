@@ -40,7 +40,7 @@ post_merge     = true
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `chunk_size` | Integer | `100` | Chunk size in MiB. Files larger than this are split. |
-| `backup` | Boolean | `true` | Copy original files to `git-split/.backup/` before splitting. |
+| `backup` | Boolean | `true` | Copy original files to `git-split/.backup/split/` before splitting, and existing files to `git-split/.backup/assemble/` before overwriting during assembly. |
 | `remove_original` | Boolean | `false` | Delete the original file after splitting. When `false`, the original stays on disk but is unstaged so only chunks are committed. |
 | `use_gitignore` | Boolean | `true` | Respect `.gitignore` when scanning for files to split. |
 | `hooks.pre_commit` | Boolean | `true` | Install `pre-commit` hook that auto-splits large files before committing. |
